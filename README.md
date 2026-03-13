@@ -232,6 +232,24 @@ Each provider clusters vectors differently, so the similarity threshold matters.
 | `get_stats` | Memory counts, profiles, activity | -- |
 | `get_cache_stats` | Embedding cache hit rates | -- |
 
+## Skills
+
+Ogham ships with three workflow skills in `skills/` that teach AI assistants how to orchestrate the MCP tools above. Install them in Claude Code, Cursor, or any client that supports skills.
+
+| Skill | Triggers on | What it does |
+|-------|-------------|-------------|
+| `ogham-research` | "remember this", "store this finding", "save what we learned" | Checks for duplicates via hybrid_search before storing. Auto-tags with a consistent scheme (`type:decision`, `type:gotcha`, etc.). Uses `store_decision` for architectural choices. |
+| `ogham-recall` | "what do I know about X", "find related", "context for this project" | Chains hybrid_search, find_related, and explore_knowledge to surface connections. Bootstraps session context at project start. |
+| `ogham-maintain` | "memory stats", "clean up my memory", "export my brain" | Runs health_check, get_stats, cleanup_expired, re_embed_all, link_unlinked. Warns before irreversible operations. |
+
+The skills orchestrate existing MCP tools -- they don't replace them. The MCP server must be connected for skills to work.
+
+To install (Claude Code):
+
+```bash
+cp -r skills/ogham-research skills/ogham-recall skills/ogham-maintain ~/.claude/skills/
+```
+
 ## Database setup
 
 Ogham works with Supabase or vanilla PostgreSQL. Run the schema file that matches your setup:
