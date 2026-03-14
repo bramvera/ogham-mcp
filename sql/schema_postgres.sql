@@ -20,6 +20,10 @@ create table if not exists memories (
     access_count integer not null default 0,
     last_accessed_at timestamptz,
     confidence float not null default 0.5,
+    importance float not null default 0.5,
+    surprise float not null default 0.5,
+    compression_level integer not null default 0,
+    original_content text,
     fts tsvector generated always as (to_tsvector('english', content)) stored
 );
 

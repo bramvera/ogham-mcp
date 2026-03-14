@@ -58,6 +58,20 @@ Write content that stands alone. Someone reading this memory in six months, in a
 
 The first one is searchable, specific, and includes the error message. The second one is useless to future-you.
 
+## Parameter formatting
+
+MCP tool parameters must be valid JSON types. Common mistakes to avoid:
+
+- **tags**: must be a JSON array, NOT a string. Correct: `["type:decision", "project:ogham"]`. Wrong: `'["type:decision", "project:ogham"]'` (stringified array).
+- **alternatives** (store_decision): same rule, must be a JSON array.
+- **related_memories** (store_decision): same rule, must be a JSON array of UUID strings.
+- **content**: plain string, no JSON encoding needed.
+- **metadata**: must be a JSON object if provided, e.g. `{"source_url": "https://..."}`.
+
+These rules apply to ALL Ogham MCP tools, including `update_memory` and `store_decision`, not just `store_memory`. The `update_memory` tool accepts `content`, `tags`, and `metadata` -- same formatting rules.
+
+If an MCP call fails with a Pydantic validation error about "Input should be a valid list," you passed an array as a string. Fix the format and retry.
+
 ## For decisions, use store_decision
 
 When the user is capturing a decision (chose X over Y, picked an architecture, settled a debate), use `store_decision` instead of `store_memory`. It structures the rationale and links to related context automatically.
