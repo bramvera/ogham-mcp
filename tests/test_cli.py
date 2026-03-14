@@ -18,7 +18,7 @@ def test_cli_health():
     """ogham health should show connection status"""
     from ogham.cli import app
 
-    with patch("ogham.cli.full_health_check") as mock_health:
+    with patch("ogham.health.full_health_check") as mock_health:
         mock_health.return_value = {
             "supabase": {"status": "ok", "connected": True},
             "embedding": {"status": "ok", "provider": "ollama"},
@@ -34,7 +34,7 @@ def test_cli_profiles():
     """ogham profiles should list profiles"""
     from ogham.cli import app
 
-    with patch("ogham.cli.db_list_profiles") as mock_profiles:
+    with patch("ogham.database.list_profiles") as mock_profiles:
         mock_profiles.return_value = [
             {"profile": "default", "count": 5},
             {"profile": "work", "count": 3},
@@ -50,7 +50,7 @@ def test_cli_stats():
     """ogham stats should show profile stats"""
     from ogham.cli import app
 
-    with patch("ogham.cli.get_memory_stats") as mock_stats:
+    with patch("ogham.database.get_memory_stats") as mock_stats:
         mock_stats.return_value = {
             "profile": "default",
             "total": 42,
@@ -68,8 +68,8 @@ def test_cli_search():
     from ogham.cli import app
 
     with (
-        patch("ogham.cli.generate_embedding") as mock_embed,
-        patch("ogham.cli.hybrid_search_memories") as mock_search,
+        patch("ogham.embeddings.generate_embedding") as mock_embed,
+        patch("ogham.database.hybrid_search_memories") as mock_search,
     ):
         mock_embed.return_value = [0.1] * 1024
         mock_search.return_value = [
@@ -91,7 +91,7 @@ def test_cli_list():
     """ogham list should show recent memories"""
     from ogham.cli import app
 
-    with patch("ogham.cli.list_recent_memories") as mock_list:
+    with patch("ogham.database.list_recent_memories") as mock_list:
         mock_list.return_value = [
             {
                 "id": "abc123",
@@ -112,8 +112,8 @@ def test_cli_cleanup():
     from ogham.cli import app
 
     with (
-        patch("ogham.cli.db_count_expired") as mock_count,
-        patch("ogham.cli.db_cleanup_expired") as mock_cleanup,
+        patch("ogham.database.count_expired") as mock_count,
+        patch("ogham.database.cleanup_expired") as mock_cleanup,
     ):
         mock_count.return_value = 3
         mock_cleanup.return_value = 3
@@ -127,7 +127,7 @@ def test_cli_cleanup_nothing():
     """ogham cleanup with nothing expired"""
     from ogham.cli import app
 
-    with patch("ogham.cli.db_count_expired") as mock_count:
+    with patch("ogham.database.count_expired") as mock_count:
         mock_count.return_value = 0
         result = runner.invoke(app, ["cleanup"])
 
@@ -156,9 +156,9 @@ def test_cli_store():
     from ogham.cli import app
 
     with (
-        patch("ogham.cli.generate_embedding") as mock_embed,
-        patch("ogham.cli.db_store") as mock_store,
-        patch("ogham.cli.get_profile_ttl") as mock_ttl,
+        patch("ogham.embeddings.generate_embedding") as mock_embed,
+        patch("ogham.database.store_memory") as mock_store,
+        patch("ogham.database.get_profile_ttl") as mock_ttl,
     ):
         mock_embed.return_value = [0.1] * 1024
         mock_store.return_value = {"id": "abc123", "created_at": "2026-01-01T00:00:00Z"}
@@ -178,9 +178,9 @@ def test_cli_store_with_ttl():
     from ogham.cli import app
 
     with (
-        patch("ogham.cli.generate_embedding") as mock_embed,
-        patch("ogham.cli.db_store") as mock_store,
-        patch("ogham.cli.get_profile_ttl") as mock_ttl,
+        patch("ogham.embeddings.generate_embedding") as mock_embed,
+        patch("ogham.database.store_memory") as mock_store,
+        patch("ogham.database.get_profile_ttl") as mock_ttl,
     ):
         mock_embed.return_value = [0.1] * 1024
         mock_store.return_value = {"id": "abc123", "created_at": "2026-01-01T00:00:00Z"}
@@ -196,11 +196,22 @@ def test_cli_store_with_ttl():
 
 
 def test_cli_serve():
-    """ogham serve should call server main"""
+    """ogham serve should call server main with no transport args"""
     from ogham.cli import app
 
-    with patch("ogham.cli._run_server") as mock_serve:
+    with patch("ogham.server.main") as mock_main:
         result = runner.invoke(app, ["serve"])
 
     assert result.exit_code == 0
-    mock_serve.assert_called_once()
+    mock_main.assert_called_once_with(transport=None, host=None, port=None)
+
+
+def test_cli_serve_sse():
+    """ogham serve --transport sse should pass args to server_main"""
+    from ogham.cli import app
+
+    with patch("ogham.server.main") as mock_main:
+        result = runner.invoke(app, ["serve", "--transport", "sse", "--port", "9000"])
+
+    assert result.exit_code == 0
+    mock_main.assert_called_once_with(transport="sse", host=None, port=9000)

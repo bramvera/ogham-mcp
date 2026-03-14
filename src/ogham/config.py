@@ -1,4 +1,4 @@
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Sensible batch defaults per provider. Each provider has different API limits:
@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     enable_http_health: bool = False
     health_port: int = 8080
 
+    server_transport: str = Field(default="stdio", validation_alias="OGHAM_TRANSPORT")
+    server_host: str = Field(default="127.0.0.1", validation_alias="OGHAM_HOST")
+    server_port: int = Field(default=8742, validation_alias="OGHAM_PORT")
+
     @field_validator("database_backend")
     @classmethod
     def check_database_backend(cls, v: str) -> str:
@@ -74,6 +78,14 @@ class Settings(BaseSettings):
         allowed = {"ollama", "openai", "mistral", "voyage"}
         if v not in allowed:
             raise ValueError(f"embedding_provider must be one of {allowed}, got {v!r}")
+        return v
+
+    @field_validator("server_transport")
+    @classmethod
+    def check_transport(cls, v: str) -> str:
+        allowed = {"stdio", "sse"}
+        if v not in allowed:
+            raise ValueError(f"server_transport must be one of {allowed}, got {v!r}")
         return v
 
     @model_validator(mode="after")

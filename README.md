@@ -120,6 +120,32 @@ uv sync
 uv run ogham --help
 ```
 
+## SSE transport (multi-agent)
+
+By default, Ogham runs in stdio mode -- each MCP client spawns its own server process. For multiple agents sharing one server, use SSE mode:
+
+```bash
+ogham serve --transport sse --port 8742
+```
+
+The server runs as a persistent background process. All clients connect to the same instance -- one database pool, one embedding cache, shared memory.
+
+Client config for SSE (any MCP client):
+
+```json
+{
+  "mcpServers": {
+    "ogham": {
+      "url": "http://127.0.0.1:8742/sse"
+    }
+  }
+}
+```
+
+Health check at `http://127.0.0.1:8742/health` (cached, sub-10ms).
+
+Configure via env vars (`OGHAM_TRANSPORT=sse`, `OGHAM_HOST`, `OGHAM_PORT`) or CLI flags. The init wizard (`ogham init`) walks through SSE setup if you choose it.
+
 ## Entry points
 
 Ogham has two entry points:
@@ -140,7 +166,8 @@ ogham stats                     # Profile statistics
 ogham export -o backup.json     # Export memories
 ogham import backup.json        # Import memories
 ogham cleanup                   # Remove expired memories
-ogham serve                     # Start MCP server (default)
+ogham serve                     # Start MCP server (stdio, default)
+ogham serve --transport sse     # Start SSE server on port 8742
 ogham openapi                   # Generate OpenAPI spec
 ```
 

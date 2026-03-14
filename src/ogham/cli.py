@@ -14,10 +14,14 @@ app = typer.Typer(
 console = Console()
 
 
-def _run_server():
+def _run_server(
+    transport: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+):
     from ogham.server import main as server_main
 
-    server_main()
+    server_main(transport=transport, host=host, port=port)
 
 
 @app.callback()
@@ -28,9 +32,13 @@ def main_callback(ctx: typer.Context):
 
 
 @app.command()
-def serve():
-    """Start the MCP server (default behavior)."""
-    _run_server()
+def serve(
+    transport: Optional[str] = typer.Option(None, help="Transport: stdio or sse"),
+    host: Optional[str] = typer.Option(None, help="SSE bind host (default 127.0.0.1)"),
+    port: Optional[int] = typer.Option(None, help="SSE port (default 8742)"),
+):
+    """Start the MCP server."""
+    _run_server(transport=transport, host=host, port=port)
 
 
 @app.command()

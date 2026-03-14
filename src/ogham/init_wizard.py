@@ -245,9 +245,29 @@ def _prompt_embeddings() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _prompt_transport() -> tuple[str, str, int]:
+    """Ask transport mode. Returns (transport, host, port)."""
+    console.print("\n[bold]3. Server transport[/bold]")
+    console.print("   [bold]1)[/bold] Stdio  -- spawned per session (default, works everywhere)")
+    console.print("   [bold]2)[/bold] SSE    -- persistent background server (better for multiple agents)\n")
+
+    choice = Prompt.ask(
+        "   Choose",
+        choices=["1", "2", "stdio", "sse"],
+        default="1",
+    )
+
+    if choice in ("2", "sse"):
+        host = Prompt.ask("   SSE bind host", default="127.0.0.1")
+        port_str = Prompt.ask("   SSE port", default="8742")
+        return "sse", host, int(port_str)
+
+    return "stdio", "127.0.0.1", 8742
+
+
 def _prompt_execution_mode() -> str:
-    """Ask whether to use uvx or Docker."""
-    console.print("\n[bold]3. How should your AI clients run Ogham?[/bold]")
+    """Ask whether to use uvx or Docker (stdio mode only)."""
+    console.print("\n[bold]4. How should your AI clients run Ogham?[/bold]")
     console.print("   [bold]1)[/bold] uvx    -- Python package, lightweight, fast startup")
     console.print("   [bold]2)[/bold] docker -- container image, all dependencies included\n")
 
@@ -259,8 +279,12 @@ def _prompt_execution_mode() -> str:
     return "uvx" if choice in ("1", "uvx") else "docker"
 
 
-def _build_mcp_entry(env_vars: dict, mode: str) -> dict:
+def _build_mcp_entry(env_vars: dict, mode: str, transport: str = "stdio",
+                     sse_host: str = "127.0.0.1", sse_port: int = 8742) -> dict:
     """Build the MCP server config entry for Ogham."""
+    if transport == "sse":
+        return {"url": f"http://{sse_host}:{sse_port}/sse"}
+
     env = dict(env_vars)
 
     if mode == "docker":
@@ -480,9 +504,11 @@ def _write_mcp_config(client: dict, mcp_entry: dict):
     config_path.write_text(json.dumps(existing, indent=2) + "\n")
 
 
-def _configure_clients(env_vars: dict, mode: str) -> list[str]:
+def _configure_clients(env_vars: dict, mode: str, transport: str = "stdio",
+                       sse_host: str = "127.0.0.1", sse_port: int = 8742) -> list[str]:
     """Write MCP config to detected AI clients."""
-    console.print("\n[bold]5. Connect your AI clients[/bold]")
+    step = "5" if transport == "stdio" else "4"
+    console.print(f"\n[bold]{step}. Connect your AI clients[/bold]")
 
     detected = _detect_clients()
     if not detected:
@@ -493,9 +519,12 @@ def _configure_clients(env_vars: dict, mode: str) -> list[str]:
         return []
 
     console.print(f"   Found {len(detected)} client(s) on your machine.\n")
-    console.print("   For each one, we'll add Ogham to its MCP config.\n")
+    if transport == "sse":
+        console.print(f"   SSE mode: clients will connect to http://{sse_host}:{sse_port}/sse\n")
+    else:
+        console.print("   For each one, we'll add Ogham to its MCP config.\n")
 
-    mcp_entry = _build_mcp_entry(env_vars, mode)
+    mcp_entry = _build_mcp_entry(env_vars, mode, transport, sse_host, sse_port)
     configured = []
 
     for client in detected:
@@ -644,11 +673,19 @@ def run_init(
 
         env_vars["EMBEDDING_DIM"] = str(dim or 512)
         exec_mode = mode or "uvx"
+        transport, sse_host, sse_port = "stdio", "127.0.0.1", 8742
     else:
         # Interactive mode — embeddings first so we know the dimension for schema
         env_vars = _prompt_embeddings()
         env_vars.update(_prompt_database())
-        exec_mode = _prompt_execution_mode()
+        transport, sse_host, sse_port = _prompt_transport()
+        if transport == "sse":
+            exec_mode = "uvx"  # irrelevant for SSE but needs a value
+            env_vars["OGHAM_TRANSPORT"] = "sse"
+            env_vars["OGHAM_HOST"] = sse_host
+            env_vars["OGHAM_PORT"] = str(sse_port)
+        else:
+            exec_mode = _prompt_execution_mode()
 
     # Schema migration
     if not skip_schema:
@@ -657,7 +694,7 @@ def run_init(
     # Configure MCP clients
     configured = []
     if not skip_clients:
-        configured = _configure_clients(env_vars, exec_mode)
+        configured = _configure_clients(env_vars, exec_mode, transport, sse_host, sse_port)
 
     # Test connection
     if not skip_test:
@@ -667,7 +704,17 @@ def run_init(
     _write_env_file(env_vars)
 
     # Summary
-    mode_str = "uvx ogham-mcp" if exec_mode == "uvx" else f"docker ({GHCR_IMAGE})"
+    if transport == "sse":
+        mode_str = f"SSE server on {sse_host}:{sse_port}"
+        start_hint = (
+            "[cyan]Start the server with:[/cyan] "
+            "[bold]ogham serve --transport sse[/bold]\n"
+            "[cyan]Then restart your MCP client(s) to connect.[/cyan]"
+        )
+    else:
+        mode_str = "uvx ogham-mcp" if exec_mode == "uvx" else f"docker ({GHCR_IMAGE})"
+        start_hint = "[cyan]Restart your MCP client(s) to pick up the new config.[/cyan]"
+
     console.print(
         Panel(
             "[bold green]You're all set![/bold green]\n\n"
@@ -675,8 +722,8 @@ def run_init(
             + f"Database: {env_vars.get('DATABASE_BACKEND', 'supabase')}\n"
             + f"Embeddings: {env_vars.get('EMBEDDING_PROVIDER', 'ollama')}"
             + f" @ {env_vars.get('EMBEDDING_DIM', '512')}d\n"
-            + f"Execution: {mode_str}\n\n"
-            + "[cyan]Restart your MCP client(s) to pick up the new config.[/cyan]",
+            + f"Transport: {mode_str}\n\n"
+            + start_hint,
             border_style="green",
         )
     )

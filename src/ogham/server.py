@@ -39,28 +39,41 @@ def validate_startup() -> None:
     logger.info("Embedding provider: %s", embedding.get("provider"))
 
 
-def main():
+def main(
+    transport: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+):
     validate_startup()
 
-    if settings.enable_http_health:
-        from ogham.http_health import start_health_server
+    actual_transport = transport or settings.server_transport
+    actual_host = host or settings.server_host
+    actual_port = port or settings.server_port
 
-        logger = logging.getLogger(__name__)
-        logger.info("Starting health check endpoint on port %s", settings.health_port)
+    logger = logging.getLogger(__name__)
 
-        def run_health_server():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(start_health_server(settings.health_port))
-            loop.run_forever()
+    if actual_transport == "sse":
+        logger.info("Starting SSE server on %s:%s", actual_host, actual_port)
+        mcp.run(transport="sse", host=actual_host, port=actual_port)
+    else:
+        if settings.enable_http_health:
+            from ogham.http_health import start_health_server
 
-        health_thread = threading.Thread(target=run_health_server, daemon=True)
-        health_thread.start()
+            logger.info("Starting health check endpoint on port %s", settings.health_port)
 
-    try:
-        mcp.run()
-    except KeyboardInterrupt:
-        os._exit(0)
+            def run_health_server():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(start_health_server(settings.health_port))
+                loop.run_forever()
+
+            health_thread = threading.Thread(target=run_health_server, daemon=True)
+            health_thread.start()
+
+        try:
+            mcp.run()
+        except KeyboardInterrupt:
+            os._exit(0)
 
 
 if __name__ == "__main__":
