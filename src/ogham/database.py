@@ -27,8 +27,11 @@ def get_backend():
         from ogham.config import settings
 
         backend_name = getattr(settings, "database_backend", "supabase")
-        if backend_name == "postgres":
-            # Placeholder — PostgresBackend will be implemented in a future task.
+        if backend_name == "gateway":
+            from ogham.backends.gateway import GatewayBackend
+
+            _backend = GatewayBackend(settings.gateway_url, settings.gateway_api_key)
+        elif backend_name == "postgres":
             from ogham.backends.postgres import PostgresBackend
 
             _backend = PostgresBackend()
@@ -75,6 +78,10 @@ def store_memory(
         importance=importance,
         surprise=surprise,
     )
+
+
+def get_memory_by_id(memory_id: str, profile: str) -> dict[str, Any] | None:
+    return get_backend().get_memory_by_id(memory_id, profile)
 
 
 def store_memories_batch(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

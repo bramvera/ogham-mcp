@@ -37,6 +37,12 @@ class DatabaseBackend(Protocol):
         profile: str,
     ) -> dict[str, Any]: ...
 
+    def get_memory_by_id(
+        self,
+        memory_id: str,
+        profile: str,
+    ) -> dict[str, Any] | None: ...
+
     def delete_memory(
         self,
         memory_id: str,

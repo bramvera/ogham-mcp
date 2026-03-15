@@ -222,6 +222,10 @@ class PostgresBackend:
             raise KeyError(f"Memory {memory_id!r} not found in profile {profile!r}")
         return row
 
+    def get_memory_by_id(self, memory_id: str, profile: str) -> dict[str, Any] | None:
+        sql = f"SELECT {_COLUMNS} FROM memories WHERE id = %(id)s AND profile = %(profile)s"
+        return self._execute(sql, {"id": memory_id, "profile": profile}, fetch="one")
+
     def delete_memory(self, memory_id: str, profile: str) -> bool:
         row = self._execute(
             "DELETE FROM memories WHERE id = %(id)s AND profile = %(profile)s RETURNING id",

@@ -64,10 +64,13 @@ class Settings(BaseSettings):
     server_host: str = Field(default="127.0.0.1", validation_alias="OGHAM_HOST")
     server_port: int = Field(default=8742, validation_alias="OGHAM_PORT")
 
+    gateway_url: str = Field(default="", validation_alias="OGHAM_GATEWAY_URL")
+    gateway_api_key: str = Field(default="", validation_alias="OGHAM_API_KEY")
+
     @field_validator("database_backend")
     @classmethod
     def check_database_backend(cls, v: str) -> str:
-        allowed = {"supabase", "postgres"}
+        allowed = {"supabase", "postgres", "gateway"}
         if v not in allowed:
             raise ValueError(f"database_backend must be one of {allowed}, got {v!r}")
         return v

@@ -2,19 +2,16 @@ import functools
 import logging
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from fastmcp import Context
 
 from ogham.app import mcp
 from ogham.config import settings
-from ogham.database import auto_link_memory as db_auto_link
 from ogham.database import (
     batch_update_embeddings,
     get_all_memories_content,
-    graph_augmented_search,
-    hybrid_search_memories,
     list_recent_memories,
     record_access,
 )
@@ -23,18 +20,16 @@ from ogham.database import count_expired as db_count_expired
 from ogham.database import create_relationship as db_create_relationship
 from ogham.database import delete_memory as db_delete
 from ogham.database import explore_memory_graph as db_explore_graph
-from ogham.database import get_profile_ttl as db_get_profile_ttl
 from ogham.database import get_related_memories as db_get_related
 from ogham.database import link_unlinked_memories as db_link_unlinked
 from ogham.database import list_profiles as db_list_profiles
 from ogham.database import set_profile_ttl as db_set_profile_ttl
-from ogham.database import store_memory as db_store
 from ogham.database import update_confidence as db_update_confidence
 from ogham.database import update_memory as db_update
 from ogham.embeddings import clear_embedding_cache, generate_embedding, generate_embeddings_batch
 from ogham.export_import import export_memories as _export_memories
 from ogham.export_import import import_memories as _import_memories
-from ogham.extraction import compute_importance, extract_dates, extract_entities
+from ogham.extraction import extract_dates
 from ogham.health import full_health_check
 
 logger = logging.getLogger(__name__)
@@ -158,74 +153,16 @@ def store_memory(
         metadata: Additional structured data to store alongside the memory.
         auto_link: Automatically link to similar existing memories (default True).
     """
-    _require_content(content)
+    from ogham.service import store_memory_enriched
 
-    # Auto-extract dates into metadata
-    dates = extract_dates(content)
-    if dates:
-        if metadata is None:
-            metadata = {}
-        metadata["dates"] = dates
-
-    # Auto-extract entities as tags
-    entity_tags = extract_entities(content)
-    if entity_tags:
-        if tags is None:
-            tags = []
-        else:
-            tags = list(tags)
-        tags.extend(entity_tags)
-
-    # Compute importance score from content signals
-    importance = compute_importance(content, tags)
-
-    embedding = generate_embedding(content)
-
-    # Compute surprise score: how novel is this vs existing memories?
-    surprise = 0.5  # default: moderate novelty
-    try:
-        existing = hybrid_search_memories(
-            query_text=content[:200],
-            query_embedding=embedding,
-            profile=_active_profile,
-            limit=3,
-        )
-        if existing:
-            max_sim = max(r.get("similarity", 0) for r in existing)
-            surprise = round(1.0 - max_sim, 3)
-    except Exception:
-        logger.debug("Surprise scoring skipped: search failed, using default 0.5")
-
-    ttl_days = db_get_profile_ttl(_active_profile)
-    expires_at = None
-    if ttl_days is not None:
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=ttl_days)).isoformat()
-    result = db_store(
+    return store_memory_enriched(
         content=content,
-        embedding=embedding,
         profile=_active_profile,
-        metadata=metadata,
         source=source,
         tags=tags,
-        expires_at=expires_at,
-        importance=importance,
-        surprise=surprise,
+        metadata=metadata,
+        auto_link=auto_link,
     )
-    response: dict[str, Any] = {
-        "status": "stored",
-        "id": result["id"],
-        "profile": _active_profile,
-        "created_at": result["created_at"],
-        "expires_at": expires_at,
-    }
-    if auto_link:
-        links_created = db_auto_link(
-            memory_id=result["id"],
-            embedding=embedding,
-            profile=_active_profile,
-        )
-        response["links_created"] = links_created
-    return response
 
 
 @mcp.tool
@@ -322,31 +259,16 @@ def hybrid_search(
         graph_depth: Follow relationship edges N hops deep (0 = no graph, default).
     """
     _require_limit(limit)
-    embedding = generate_embedding(query)
+    from ogham.service import search_memories_enriched
 
-    if graph_depth > 0:
-        results = graph_augmented_search(
-            query_text=query,
-            query_embedding=embedding,
-            profile=_active_profile,
-            limit=limit,
-            graph_depth=graph_depth,
-            tags=tags,
-            source=source,
-        )
-    else:
-        results = hybrid_search_memories(
-            query_text=query,
-            query_embedding=embedding,
-            profile=_active_profile,
-            limit=limit,
-            tags=tags,
-            source=source,
-        )
-
-    if results:
-        record_access([r["id"] for r in results])
-    return results
+    return search_memories_enriched(
+        query=query,
+        profile=_active_profile,
+        limit=limit,
+        tags=tags,
+        source=source,
+        graph_depth=graph_depth,
+    )
 
 
 @mcp.tool

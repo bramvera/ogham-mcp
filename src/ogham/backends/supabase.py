@@ -286,6 +286,22 @@ class SupabaseBackend:
         )
         return result.data if isinstance(result.data, float) else 0.5
 
+    def get_memory_by_id(self, memory_id: str, profile: str) -> dict[str, Any] | None:
+        result = (
+            self._get_client()
+            .table("memories")
+            .select("*")
+            .eq("id", memory_id)
+            .eq("profile", profile)
+            .execute()
+        )
+        if not result.data:
+            return None
+        row = result.data[0]
+        row.pop("embedding", None)
+        row.pop("fts", None)
+        return row
+
     def delete_memory(self, memory_id: str, profile: str) -> bool:
         result = (
             self._get_client()
