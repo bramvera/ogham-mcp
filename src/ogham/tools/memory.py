@@ -1,5 +1,6 @@
 import functools
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -62,11 +63,36 @@ def log_timing(tool_name: str):
     return decorator
 
 
+MIN_CONTENT_LEN = 10
+
+# Patterns that indicate noise rather than useful memory content
+_NOISE_PATTERNS = [
+    re.compile(r"^diff --git ", re.MULTILINE),  # git diff output
+    re.compile(r"^(\+\+\+|---) [ab]/", re.MULTILINE),  # diff headers
+    re.compile(r"^@@\s", re.MULTILINE),  # diff hunks
+    re.compile(r"^\$\s", re.MULTILINE),  # shell prompts
+    re.compile(r"^[\s\S]*\x00", re.MULTILINE),  # binary content
+]
+
+
 def _require_content(content: str) -> None:
     if not content or not content.strip():
         raise ValueError("content must be a non-empty string")
     if len(content) > MAX_CONTENT_LEN:
         raise ValueError(f"content exceeds maximum length of {MAX_CONTENT_LEN} characters")
+    stripped = content.strip()
+    if len(stripped) < MIN_CONTENT_LEN:
+        raise ValueError(
+            f"content too short ({len(stripped)} chars). "
+            f"Minimum {MIN_CONTENT_LEN} characters for a useful memory."
+        )
+    # Check for noise patterns (diff output, shell dumps, binary)
+    noise_matches = sum(1 for p in _NOISE_PATTERNS if p.search(stripped))
+    if noise_matches >= 2:
+        raise ValueError(
+            "content looks like a diff, shell dump, or binary output. "
+            "Store a summary of what happened instead of raw output."
+        )
 
 
 def _require_limit(limit: int) -> None:
@@ -168,6 +194,7 @@ def store_decision(
     decision: str,
     rationale: str,
     alternatives: list[str] | None = None,
+    reasoning_trace: str | None = None,
     tags: list[str] | None = None,
     related_memories: list[str] | None = None,
     source: str | None = None,
@@ -179,6 +206,7 @@ def store_decision(
         decision: What was decided.
         rationale: Why — the reasoning behind the decision.
         alternatives: What was considered and rejected.
+        reasoning_trace: The full chain of thought that led to this decision.
         tags: Additional tags (type:decision is always added).
         related_memories: UUIDs of memories this decision relates to (creates supports edges).
         source: Where this decision was made.
@@ -189,6 +217,8 @@ def store_decision(
     parts = [f"Decision: {decision}", f"Rationale: {rationale}"]
     if alternatives:
         parts.append(f"Alternatives considered: {', '.join(alternatives)}")
+    if reasoning_trace:
+        parts.append(f"Reasoning: {reasoning_trace}")
     content = "\n".join(parts)
 
     decision_tags = list(tags or [])
@@ -200,6 +230,8 @@ def store_decision(
         "alternatives": alternatives or [],
         "decided_at": datetime.now(timezone.utc).isoformat(),
     }
+    if reasoning_trace:
+        metadata["reasoning_trace"] = reasoning_trace
 
     result = store_memory(
         content=content,

@@ -45,6 +45,7 @@ Use a consistent scheme so memories are filterable later:
 - `type:architecture` -- how components connect
 - `type:reference` -- links, docs, external resources
 - `project:<name>` -- infer from the repo name, CLAUDE.md, or ask
+- `branch:<name>` -- current git branch (auto-detect with `git branch --show-current`). Scope memories to the branch you're working on so they don't pollute search results on other branches. Skip this tag on `main`/`master` -- those memories are global.
 
 Always set `source` to identify which client stored it (e.g. "claude-code", "cursor", "agent-zero").
 
@@ -81,10 +82,13 @@ store_decision(
   decision="Use UUID primary keys instead of bigint",
   rationale="Supabase recommends UUIDs for distributed systems. Bigint requires sequences which don't work well across regions.",
   alternatives=["bigint with sequences", "ULID", "nanoid"],
+  reasoning_trace="Evaluated 4 options. Bigint needs sequences which break across regions. ULID is sortable but adds a dependency. Nanoid is short but not universally supported. UUID is native to Postgres and Supabase recommends it.",
   tags=["type:decision", "project:ogham", "database"],
   related_memories=["<id-of-related-memory-if-known>"]
 )
 ```
+
+The `reasoning_trace` is optional but valuable. It captures the full chain of thought, not just the conclusion. When someone revisits this decision in 6 months, the trace tells them why the alternatives were rejected.
 
 ## After storing
 
