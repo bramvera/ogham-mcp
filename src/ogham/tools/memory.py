@@ -13,6 +13,7 @@ from ogham.database import auto_link_memory as db_auto_link
 from ogham.database import (
     batch_update_embeddings,
     get_all_memories_content,
+    graph_augmented_search,
     hybrid_search_memories,
     list_recent_memories,
     record_access,
@@ -33,6 +34,7 @@ from ogham.database import update_memory as db_update
 from ogham.embeddings import clear_embedding_cache, generate_embedding, generate_embeddings_batch
 from ogham.export_import import export_memories as _export_memories
 from ogham.export_import import import_memories as _import_memories
+from ogham.extraction import extract_dates, extract_entities
 from ogham.health import full_health_check
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,23 @@ def store_memory(
         auto_link: Automatically link to similar existing memories (default True).
     """
     _require_content(content)
+
+    # Auto-extract dates into metadata
+    dates = extract_dates(content)
+    if dates:
+        if metadata is None:
+            metadata = {}
+        metadata["dates"] = dates
+
+    # Auto-extract entities as tags
+    entity_tags = extract_entities(content)
+    if entity_tags:
+        if tags is None:
+            tags = []
+        else:
+            tags = list(tags)
+        tags.extend(entity_tags)
+
     embedding = generate_embedding(content)
     ttl_days = db_get_profile_ttl(_active_profile)
     expires_at = None
@@ -225,11 +244,16 @@ def store_decision(
     if "type:decision" not in decision_tags:
         decision_tags.append("type:decision")
 
+    # Extract dates from decision content
+    dates = extract_dates(content)
+
     metadata = {
         "type": "decision",
         "alternatives": alternatives or [],
         "decided_at": datetime.now(timezone.utc).isoformat(),
     }
+    if dates:
+        metadata["dates"] = dates
     if reasoning_trace:
         metadata["reasoning_trace"] = reasoning_trace
 
@@ -261,6 +285,7 @@ def hybrid_search(
     limit: int = 10,
     tags: list[str] | None = None,
     source: str | None = None,
+    graph_depth: int = 0,
 ) -> list[dict[str, Any]]:
     """Search memories in the active profile by meaning and keywords (hybrid search).
 
@@ -273,17 +298,31 @@ def hybrid_search(
         limit: Maximum number of results to return.
         tags: Filter results to memories with any of these tags.
         source: Filter results to memories from this source.
+        graph_depth: Follow relationship edges N hops deep (0 = no graph, default).
     """
     _require_limit(limit)
     embedding = generate_embedding(query)
-    results = hybrid_search_memories(
-        query_text=query,
-        query_embedding=embedding,
-        profile=_active_profile,
-        limit=limit,
-        tags=tags,
-        source=source,
-    )
+
+    if graph_depth > 0:
+        results = graph_augmented_search(
+            query_text=query,
+            query_embedding=embedding,
+            profile=_active_profile,
+            limit=limit,
+            graph_depth=graph_depth,
+            tags=tags,
+            source=source,
+        )
+    else:
+        results = hybrid_search_memories(
+            query_text=query,
+            query_embedding=embedding,
+            profile=_active_profile,
+            limit=limit,
+            tags=tags,
+            source=source,
+        )
+
     if results:
         record_access([r["id"] for r in results])
     return results

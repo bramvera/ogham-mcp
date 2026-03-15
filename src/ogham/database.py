@@ -103,6 +103,35 @@ def hybrid_search_memories(
     )
 
 
+def graph_augmented_search(
+    query_text: str,
+    query_embedding: list[float],
+    profile: str,
+    limit: int = 10,
+    graph_depth: int = 1,
+    tags: list[str] | None = None,
+    source: str | None = None,
+) -> list[dict[str, Any]]:
+    """Hybrid search + follow relationship edges for connected memories."""
+    initial = hybrid_search_memories(query_text, query_embedding, profile, limit, tags, source)
+    if not initial or graph_depth < 1:
+        return initial
+
+    seen_ids = {r["id"] for r in initial}
+    augmented = list(initial)
+
+    for result in initial[:5]:
+        related = get_related_memories(result["id"], depth=graph_depth, min_strength=0.5)
+        for rel in related:
+            if rel["id"] not in seen_ids:
+                seen_ids.add(rel["id"])
+                rel["relevance"] = result.get("relevance", 0.5) * rel.get("edge_strength", 0.5)
+                augmented.append(rel)
+
+    augmented.sort(key=lambda r: r.get("relevance", 0), reverse=True)
+    return augmented[:limit]
+
+
 def list_recent_memories(
     profile: str,
     limit: int = 10,

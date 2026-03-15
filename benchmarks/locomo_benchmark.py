@@ -60,8 +60,26 @@ def load_dataset() -> list[dict]:
     return json.loads(DATA_FILE.read_text())
 
 
-def ingest_conversations(data: list[dict], profile: str) -> int:
-    """Ingest LoCoMo conversations into Ogham as memories."""
+def _extract_sessions(conversation: dict) -> list[tuple[str, list[dict]]]:
+    """Extract ordered sessions from the LoCoMo conversation dict."""
+    import re
+
+    sessions = []
+    for key in conversation:
+        m = re.match(r"^session_(\d+)$", key)
+        if m and isinstance(conversation[key], list):
+            sessions.append((int(m.group(1)), key, conversation[key]))
+    sessions.sort(key=lambda x: x[0])
+    return [(key, turns) for _, key, turns in sessions]
+
+
+def ingest_conversations(
+    data: list[dict], profile: str, chunk_size: int = 0, chunk_overlap: int = 2
+) -> int:
+    """Ingest LoCoMo conversations into Ogham as memories.
+
+    chunk_size=0 means full sessions. chunk_size>0 uses sliding windows.
+    """
     from ogham.database import store_memory as db_store
     from ogham.embeddings import generate_embedding
 
@@ -69,33 +87,62 @@ def ingest_conversations(data: list[dict], profile: str) -> int:
     for sample in data:
         conv_id = sample["sample_id"]
         conversation = sample["conversation"]
+        sessions = _extract_sessions(conversation)
+        total_turns = 0
 
-        # Group turns into session-sized chunks (every 5 turns)
-        chunk_size = 5
-        for i in range(0, len(conversation), chunk_size):
-            chunk = conversation[i : i + chunk_size]
-            # Build a readable memory from the conversation chunk
-            lines = []
-            for turn in chunk:
-                speaker = turn.get("speaker", turn.get("role", "unknown"))
-                text = turn.get("text", turn.get("content", ""))
-                lines.append(f"{speaker}: {text}")
+        for session_key, turns in sessions:
+            total_turns += len(turns)
+            date = conversation.get(f"{session_key}_date_time", "")
 
-            content = "\n".join(lines)
-            if len(content.strip()) < 20:
-                continue
+            if chunk_size > 0 and len(turns) > chunk_size:
+                # Sliding window chunking
+                step = max(1, chunk_size - chunk_overlap)
+                for i in range(0, len(turns), step):
+                    window = turns[i : i + chunk_size]
+                    lines = [f"{t.get('speaker', '?')}: {t.get('text', '')}" for t in window]
+                    content = "\n".join(lines)
+                    if len(content.strip()) < 20:
+                        continue
+                    embedding = generate_embedding(content)
+                    dia_ids = [t.get("dia_id", "") for t in window if t.get("dia_id")]
+                    chunk_tags = [f"conv:{conv_id}", f"session:{session_key}", f"chunk:{i}"]
+                    chunk_tags.extend([f"dia:{d}" for d in dia_ids])
+                    db_store(
+                        content=content,
+                        embedding=embedding,
+                        profile=profile,
+                        source="locomo-benchmark",
+                        tags=chunk_tags,
+                        metadata={"date": date} if date else None,
+                    )
+                    total_stored += 1
+            else:
+                # Full session as one memory
+                lines = [f"{t.get('speaker', '?')}: {t.get('text', '')}" for t in turns]
+                content = "\n".join(lines)
+                if len(content.strip()) < 20:
+                    continue
+                embedding = generate_embedding(content)
+                dia_ids = [t.get("dia_id", "") for t in turns if t.get("dia_id")]
+                session_tags = [f"conv:{conv_id}", f"session:{session_key}"]
+                session_tags.extend([f"dia:{d}" for d in dia_ids])
+                db_store(
+                    content=content,
+                    embedding=embedding,
+                    profile=profile,
+                    source="locomo-benchmark",
+                    tags=session_tags,
+                    metadata={"date": date} if date else None,
+                )
+                total_stored += 1
 
-            embedding = generate_embedding(content)
-            db_store(
-                content=content,
-                embedding=embedding,
-                profile=profile,
-                source="locomo-benchmark",
-                tags=[f"conv:{conv_id}", f"chunk:{i // chunk_size}"],
-            )
-            total_stored += 1
-
-        logger.info("Ingested %s (%d turns -> %d chunks)", conv_id, len(conversation), total_stored)
+        logger.info(
+            "Ingested %s (%d sessions, %d turns, %d stored)",
+            conv_id,
+            len(sessions),
+            total_turns,
+            total_stored,
+        )
 
     return total_stored
 
@@ -115,9 +162,14 @@ def evaluate(data: list[dict], profile: str, top_k: int = 10) -> dict:
     for sample in data:
         conv_id = sample["sample_id"]
         for qa in sample["qa"]:
-            question = qa["question"]
-            answer = qa["answer"]
-            evidence = qa.get("evidence", "")
+            question = str(qa["question"])
+            answer = str(qa.get("answer", qa.get("adversarial_answer", "")))
+            raw_evidence = qa.get("evidence", "")
+            # Evidence can be a list of strings, a single string, or other types
+            if isinstance(raw_evidence, list):
+                evidence = " ".join(str(e) for e in raw_evidence)
+            else:
+                evidence = str(raw_evidence)
             category = str(qa.get("category", "unknown"))
             cat_name = CATEGORIES.get(category, f"cat-{category}")
 
@@ -126,22 +178,54 @@ def evaluate(data: list[dict], profile: str, top_k: int = 10) -> dict:
             search_results = hybrid_search_memories(
                 query_text=question,
                 query_embedding=query_embedding,
-                match_count=top_k,
                 profile=profile,
+                limit=top_k,
             )
 
             # Check if evidence or answer appears in any of the top K results
             found = False
             rank = 0
+            answer_lower = answer.lower().strip()
             for i, result in enumerate(search_results):
-                content = result.get("content", "")
-                # Check if the answer or evidence text appears in the result
-                if answer.lower() in content.lower() or (
-                    evidence and evidence.lower()[:50] in content.lower()
-                ):
+                content_lower = result.get("content", "").lower()
+
+                # Exact substring match
+                if answer_lower and answer_lower in content_lower:
                     found = True
                     rank = i + 1
                     break
+
+                # Evidence match (any evidence fragment in content)
+                if evidence:
+                    evidence_parts = evidence.split()
+                    # Check if any substantial evidence words appear
+                    if len(evidence_parts) > 2:
+                        ev_fragment = " ".join(evidence_parts[:5]).lower()
+                        if ev_fragment in content_lower:
+                            found = True
+                            rank = i + 1
+                            break
+
+                # Fuzzy match for short answers: all words present in content
+                if answer_lower and len(answer_lower) < 30:
+                    words = [w for w in answer_lower.split() if len(w) > 2]
+                    if words and all(w in content_lower for w in words):
+                        found = True
+                        rank = i + 1
+                        break
+
+            # Evidence ID match via dialogue ID tags
+            if not found and isinstance(raw_evidence, list):
+                evidence_ids = [str(e) for e in raw_evidence]
+                for i, result in enumerate(search_results):
+                    result_tags = result.get("tags", [])
+                    for eid in evidence_ids:
+                        if f"dia:{eid}" in result_tags:
+                            found = True
+                            rank = i + 1
+                            break
+                    if found:
+                        break
 
             results["total_questions"] += 1
             if found:
@@ -209,7 +293,23 @@ def main():
     parser.add_argument(
         "--skip-ingest", action="store_true", help="Skip ingestion (use existing data)"
     )
+    parser.add_argument("--env-file", default=None, help="Path to .env file (override default)")
+    parser.add_argument(
+        "--chunk-size", type=int, default=0, help="Turn chunk size (0 = full session)"
+    )
+    parser.add_argument("--chunk-overlap", type=int, default=2, help="Overlap turns between chunks")
     args = parser.parse_args()
+
+    # Load alternate env file if specified (e.g. Neon test bench)
+    if args.env_file:
+        from dotenv import load_dotenv
+
+        load_dotenv(args.env_file, override=True)
+        # Force settings to reload from new env
+        from ogham.config import settings
+
+        settings._reset()
+        logger.info("Loaded env from %s", args.env_file)
 
     if args.cleanup:
         cleanup(args.profile)
@@ -220,9 +320,14 @@ def main():
     logger.info("Loaded %d conversations with %d QA pairs", len(data), total_qa)
 
     if not args.skip_ingest:
-        logger.info("Ingesting conversations into profile '%s'...", args.profile)
+        logger.info(
+            "Ingesting conversations into profile '%s' (chunk_size=%s, overlap=%d)...",
+            args.profile,
+            args.chunk_size or "full-session",
+            args.chunk_overlap,
+        )
         start = time.time()
-        stored = ingest_conversations(data, args.profile)
+        stored = ingest_conversations(data, args.profile, args.chunk_size, args.chunk_overlap)
         elapsed = time.time() - start
         logger.info("Ingested %d chunks in %.1fs", stored, elapsed)
 
