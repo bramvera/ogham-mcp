@@ -1,6 +1,6 @@
 [project]
 name = "ogham-mcp"
-version = "0.4.1"
+version = "0.4.2"
 description = "Shared memory MCP server — persistent, searchable, cross-client"
 readme = "README.md"
 license = "MIT"
@@ -45,6 +45,7 @@ Repository = "https://github.com/ogham-mcp/ogham-mcp"
 
 [project.scripts]
 ogham = "ogham.cli:main"
+ogham-mcp = "ogham.cli:main"
 ogham-serve = "ogham.server:main"
 
 [tool.pytest.ini_options]
