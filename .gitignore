@@ -37,3 +37,4 @@ skills-lock.json
 
 # Docker
 .worktrees/
+benchmarks/
