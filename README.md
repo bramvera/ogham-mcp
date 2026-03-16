@@ -22,12 +22,7 @@ Ogham gives your agents a shared memory that persists across sessions and client
 ### 2. Install
 
 ```bash
-# From PyPI (recommended)
 claude mcp add ogham -- uvx ogham-mcp
-
-# Before PyPI publish, install from GitHub
-uvx --from git+https://github.com/ogham-mcp/ogham-mcp.git ogham init
-claude mcp add ogham -- uvx --from git+https://github.com/ogham-mcp/ogham-mcp.git ogham-serve
 ```
 
 The `ogham init` wizard walks you through database setup, embedding provider, and writes MCP client configs. Run it before adding the server to your client.
@@ -64,19 +59,14 @@ Tell your agent to remember something, then ask about it later -- from the same 
 
 | Method | Command | When to use |
 |--------|---------|-------------|
-| **uvx** (recommended) | `uvx ogham-mcp` | PyPI is published, quick setup |
-| **uvx from GitHub** | `uvx --from git+https://github.com/ogham-mcp/ogham-mcp.git ogham-serve` | Before PyPI, testing from source |
+| **uvx** (recommended) | `uvx ogham-mcp` | Quick setup, auto-updates |
 | **Docker** | `docker pull ghcr.io/ogham-mcp/ogham-mcp` | Isolation, self-hosted |
 | **Git clone** | `git clone` + `uv sync` | Development, contributions |
 
 ### Claude Code
 
 ```bash
-# From PyPI
 claude mcp add ogham -- uvx ogham-mcp
-
-# From GitHub (before PyPI) -- run ogham init first to configure your database and provider
-claude mcp add ogham -- uvx --from git+https://github.com/ogham-mcp/ogham-mcp.git ogham-serve
 ```
 
 ### OpenCode
