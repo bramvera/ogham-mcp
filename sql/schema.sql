@@ -330,41 +330,29 @@ end;
 $$;
 
 -- RPC: hybrid search combining semantic (pgvector) and keyword (tsvector) via RRF
-create or replace function hybrid_search_memories(
+CREATE OR REPLACE FUNCTION hybrid_search_memories(
     query_text text,
-    query_embedding extensions.vector(512),
-    match_count int default 10,
-    filter_profile text default 'default',
-    filter_tags text[] default null,
-    filter_source text default null,
-    full_text_weight float default 1.0,
-    semantic_weight float default 1.0,
-    rrf_k int default 60
+    query_embedding vector,
+    match_count integer DEFAULT 10,
+    filter_profile text DEFAULT 'default',
+    filter_tags text[] DEFAULT NULL,
+    filter_source text DEFAULT NULL,
+    full_text_weight float DEFAULT 0.3,
+    semantic_weight float DEFAULT 0.7,
+    rrf_k integer DEFAULT 10
 )
-returns table (
-    id uuid,
-    content text,
-    metadata jsonb,
-    source text,
-    profile text,
-    tags text[],
-    similarity float,
-    keyword_rank float,
-    relevance float,
-    access_count integer,
-    last_accessed_at timestamptz,
-    confidence float,
-    created_at timestamptz,
-    updated_at timestamptz
+RETURNS TABLE(
+    id uuid, content text, metadata jsonb, source text, profile text, tags text[],
+    similarity float, keyword_rank float, relevance float,
+    access_count integer, last_accessed_at timestamptz, confidence float,
+    created_at timestamptz, updated_at timestamptz
 )
-language sql
-security invoker
-set search_path = public, extensions
-as $$
+LANGUAGE sql
+SET search_path = public, extensions
+AS $function$
 with semantic as (
     select
         m.id,
-        row_number() over (order by m.embedding <=> query_embedding) as rank_ix,
         (1 - (m.embedding <=> query_embedding))::float as similarity
     from memories m
     where m.profile = filter_profile
@@ -372,12 +360,11 @@ with semantic as (
       and (filter_source is null or m.source = filter_source)
       and (m.expires_at is null or m.expires_at > now())
     order by m.embedding <=> query_embedding
-    limit match_count * 2
+    limit match_count * 3
 ),
 keyword as (
     select
         m.id,
-        row_number() over (order by ts_rank_cd(m.fts, websearch_to_tsquery(query_text)) desc) as rank_ix,
         ts_rank_cd(m.fts, websearch_to_tsquery(query_text))::float as keyword_rank
     from memories m
     where m.profile = filter_profile
@@ -386,58 +373,30 @@ keyword as (
       and (filter_source is null or m.source = filter_source)
       and (m.expires_at is null or m.expires_at > now())
     order by keyword_rank desc
-    limit match_count * 2
-),
-combined as (
-    select id, rank_ix, similarity, 0.0::float as keyword_rank, 'semantic' as src
-    from semantic
-    union all
-    select id, rank_ix, 0.0::float as similarity, keyword_rank, 'keyword' as src
-    from keyword
+    limit match_count * 3
 ),
 fused as (
     select
-        c.id,
-        max(c.similarity) as similarity,
-        max(c.keyword_rank) as keyword_rank,
-        sum(
-            case when c.src = 'semantic' then semantic_weight / (rrf_k + c.rank_ix)
-                 when c.src = 'keyword'  then full_text_weight / (rrf_k + c.rank_ix)
-                 else 0.0 end
-        ) as rrf_score
-    from combined c
-    group by c.id
+        coalesce(s.id, k.id) as id,
+        coalesce(s.similarity, 0.0) as similarity,
+        coalesce(k.keyword_rank, 0.0) as keyword_rank,
+        (
+            semantic_weight * coalesce(s.similarity, 0.0)
+            + full_text_weight * coalesce(k.keyword_rank, 0.0)
+        ) as score
+    from semantic s
+    full outer join keyword k on s.id = k.id
 )
 select
-    m.id,
-    m.content,
-    m.metadata,
-    m.source,
-    m.profile,
-    m.tags,
-    f.similarity,
-    f.keyword_rank,
-    -- Relevance = rrf_score * softplus(ACT-R) * confidence * graph_boost
-    -- graph_boost: (1 + sum(relationship_strength) * 0.2)
+    m.id, m.content, m.metadata, m.source, m.profile, m.tags,
+    f.similarity, f.keyword_rank,
     (
-        f.rrf_score
-        * ln(1.0 + exp(
-            ln(m.access_count + 1.0) -
-            0.5 * ln(
-                greatest(
-                    extract(epoch from now() - coalesce(m.last_accessed_at, m.created_at)) / 86400.0,
-                    0.01
-                ) / (m.access_count + 1.0)
-            )
-        ))
+        f.score
+        * (1.0 + ln(m.access_count + 1.0) * 0.1)
         * m.confidence
         * (1.0 + g.graph_boost * 0.2)
     )::float as relevance,
-    m.access_count,
-    m.last_accessed_at,
-    m.confidence,
-    m.created_at,
-    m.updated_at
+    m.access_count, m.last_accessed_at, m.confidence, m.created_at, m.updated_at
 from fused f
 join memories m on m.id = f.id
 left join lateral (
@@ -447,7 +406,7 @@ left join lateral (
 ) g on true
 order by relevance desc
 limit match_count;
-$$;
+$function$;
 
 -- RPC: record access for memories returned by search
 create or replace function record_access(memory_ids uuid[])
