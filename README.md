@@ -15,7 +15,7 @@
 - [Installation methods](#installation-methods) -- Claude Code, OpenCode, Docker, source
 - [SSE transport](#sse-transport-multi-agent) -- multi-agent setup
 - [CLI](#cli) -- command-line interface
-- [Configuration](#configuration) -- env vars, embedding providers, temporal search
+- [Configuration](#configuration) -- env vars, embedding providers, temporal search, lifecycle hooks
 - [MCP tools](#mcp-tools) -- memory, search, graph, profiles, import/export
 - [Skills](#skills) -- ogham-research, ogham-recall, ogham-maintain
 - [Scoring and condensing](#scoring-and-condensing)
@@ -211,6 +211,11 @@ ogham stats                     # Profile statistics
 ogham export -o backup.json     # Export memories
 ogham import backup.json        # Import memories
 ogham cleanup                   # Remove expired memories
+ogham hooks install             # Auto-detect client + configure hooks
+ogham hooks session-start       # Inject project context (piped from stdin)
+ogham hooks post-tool           # Capture tool activity (piped from stdin)
+ogham hooks inscribe            # Save session context before compaction
+ogham hooks recall              # Restore context after compaction
 ogham serve                     # Start MCP server (stdio, default)
 ogham serve --transport sse     # Start SSE server on port 8742
 ogham openapi                   # Generate OpenAPI spec
@@ -267,6 +272,31 @@ TEMPORAL_LLM_MODEL=gpt-4o-mini
 Any [litellm](https://docs.litellm.ai/docs/providers)-compatible model string works -- `deepseek/deepseek-chat`, `moonshot/moonshot-v1-8k`, etc. The LLM is only called when parsedatetime fails and the query has temporal intent, so costs stay near zero.
 
 If `TEMPORAL_LLM_MODEL` is empty (the default), parsedatetime handles everything on its own. Requires the `litellm` package (`pip install litellm` or install Ogham with the appropriate extra).
+
+### Lifecycle hooks
+
+Ogham hooks inject memory context at session start and preserve it across compaction. Install for your client:
+
+```bash
+ogham hooks install
+```
+
+| Client | What gets installed |
+|--------|-------------------|
+| Claude Code | 4 hooks in `~/.claude/settings.json` (SessionStart, PostToolUse, PreCompact, PostCompact) |
+| Kiro | Instructions for Hook UI setup (session start + post tool) |
+| Codex, Cursor, others | Project instruction file (CLAUDE.md, AGENTS.md, or .cursorrules) |
+
+**What the hooks do:**
+
+- **session-start** -- searches Ogham for memories relevant to your project directory, injects them as context
+- **post-tool** -- captures meaningful tool executions as memories. Skips noise (`ls`, `cat`, `git status`) and only stores signal (commits, deploys, errors, config changes). Secrets are masked before storing.
+- **inscribe** -- saves session context to Ogham before Claude compacts the conversation
+- **recall** -- restores relevant memories after compaction so context isn't lost
+
+**Smart filtering:** Hooks don't capture everything. Routine commands (`ls`, `pwd`, `git add`) are skipped. Only signal events (errors, deployments, commits, config changes) are stored -- typically 20-30 memories per session instead of hundreds.
+
+**Secret masking:** API keys, tokens, passwords, and JWTs are automatically replaced with `***MASKED***` before storing. The event is captured ("configured Stripe API key") but the actual secret never touches the database.
 
 ## MCP tools
 

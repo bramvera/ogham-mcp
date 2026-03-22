@@ -20,6 +20,9 @@ def _detect_client() -> str:
     if (Path.home() / ".cursor").exists():
         return "cursor"
 
+    if (Path.home() / ".codex").exists() or shutil.which("codex"):
+        return "codex"
+
     return "generic"
 
 
@@ -81,9 +84,41 @@ def _install_kiro():
     )
 
 
-def _install_generic():
-    """Add CLAUDE.md instructions for clients without hook support."""
-    claude_md = Path.cwd() / "CLAUDE.md"
+def _detect_instruction_file() -> tuple[Path, str]:
+    """Find the right project instruction file for the current client.
+
+    Returns (path, display_name).
+    """
+    cwd = Path.cwd()
+
+    # Codex uses AGENTS.md
+    if (cwd / "AGENTS.md").exists():
+        return cwd / "AGENTS.md", "AGENTS.md"
+
+    # Cursor uses .cursorrules
+    if (cwd / ".cursorrules").exists():
+        return cwd / ".cursorrules", ".cursorrules"
+
+    # Kiro uses kiro.md or .kiro/
+    if (cwd / "kiro.md").exists():
+        return cwd / "kiro.md", "kiro.md"
+
+    # Claude Code uses CLAUDE.md (also works as universal fallback)
+    return cwd / "CLAUDE.md", "CLAUDE.md"
+
+
+def _install_generic(client: str = "generic"):
+    """Add instructions to the project instruction file."""
+    target, name = _detect_instruction_file()
+
+    # If no file exists, pick based on detected client
+    if not target.exists():
+        if client == "cursor":
+            target = Path.cwd() / ".cursorrules"
+            name = ".cursorrules"
+        elif client == "codex":
+            target = Path.cwd() / "AGENTS.md"
+            name = "AGENTS.md"
 
     hook_section = """
 ## Ogham Memory Hooks
@@ -97,17 +132,17 @@ When you finish significant work, save learnings:
 - Tag with type:decision, type:gotcha, type:pattern
 """
 
-    if claude_md.exists():
-        content = claude_md.read_text()
+    if target.exists():
+        content = target.read_text()
         if "Ogham Memory Hooks" in content:
-            console.print("[yellow]CLAUDE.md already has Ogham hook instructions[/yellow]")
+            console.print(f"[yellow]{name} already has Ogham hook instructions[/yellow]")
             return
-        with open(claude_md, "a") as f:
+        with open(target, "a") as f:
             f.write(hook_section)
     else:
-        claude_md.write_text(hook_section)
+        target.write_text(hook_section)
 
-    console.print("[green]CLAUDE.md updated with Ogham hook instructions[/green]")
+    console.print(f"[green]{name} updated with Ogham hook instructions[/green]")
     console.print("  Works with Codex, Cursor, OpenCode, and any MCP client")
 
 
@@ -123,9 +158,9 @@ def install_hooks():
         case "kiro":
             _install_kiro()
         case _:
-            _install_generic()
-            if client != "generic":
+            _install_generic(client)
+            if client not in ("generic", "codex", "cursor"):
                 console.print(
                     f"\n[dim]{client} doesn't support hooks natively."
-                    " CLAUDE.md instructions added as fallback.[/dim]"
+                    " Instructions added to project file as fallback.[/dim]"
                 )
