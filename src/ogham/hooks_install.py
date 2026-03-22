@@ -38,19 +38,31 @@ def _install_claude_code():
 
     hooks = settings.setdefault("hooks", {})
     ogham_hooks = {
-        "SessionStart": [{"command": "ogham hooks session-start"}],
-        "PostToolUse": [{"command": "ogham hooks post-tool"}],
-        "PreCompact": [{"command": "ogham hooks inscribe"}],
-        "PostCompact": [{"command": "ogham hooks recall"}],
+        "SessionStart": {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "ogham hooks session-start"}],
+        },
+        "PostToolUse": {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "ogham hooks post-tool"}],
+        },
+        "PreCompact": {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "ogham hooks inscribe"}],
+        },
+        "PostCompact": {
+            "matcher": "",
+            "hooks": [{"type": "command", "command": "ogham hooks recall"}],
+        },
     }
 
-    for event, cmds in ogham_hooks.items():
+    for event, hook_entry in ogham_hooks.items():
         existing = hooks.get(event, [])
         # Don't duplicate if already installed
-        existing_cmds = [c.get("command", "") for c in existing]
-        for cmd in cmds:
-            if cmd["command"] not in existing_cmds:
-                existing.append(cmd)
+        ogham_cmd = hook_entry["hooks"][0]["command"]
+        already = any(ogham_cmd in str(e.get("hooks", [])) for e in existing)
+        if not already:
+            existing.append(hook_entry)
         hooks[event] = existing
 
     settings["hooks"] = hooks
