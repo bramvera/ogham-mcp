@@ -12,11 +12,21 @@ import json
 import os
 import platform
 import shutil
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
+
+
+def _get_version() -> str:
+    """Get the installed ogham-mcp version."""
+    try:
+        return pkg_version("ogham-mcp")
+    except Exception:
+        return "dev"
+
 
 console = Console()
 
@@ -388,9 +398,8 @@ def _run_schema(env_vars: dict) -> bool:
             import psycopg
         except ImportError:
             console.print(
-                "   [yellow]psycopg not installed.[/yellow]\n"
-                "   [cyan]Reinstall with postgres support:[/cyan]\n"
-                "   [cyan]  uvx --from 'ogham-mcp[postgres]' ogham-mcp init[/cyan]"
+                "   [yellow]psycopg not installed."
+                " Install with: uv add ogham-mcp[postgres][/yellow]"
             )
             console.print("   Run the schema manually: sql/schema_postgres.sql")
             return False
@@ -576,8 +585,6 @@ def _test_connection(env_vars: dict) -> bool:
             console.print("   [green]Database: connected[/green]")
         else:
             console.print(f"   [red]Database: {db_result.get('error', 'failed')}[/red]")
-            if hint := db_result.get("hint"):
-                console.print(f"   [cyan]{hint}[/cyan]")
             return False
 
         # Check embedding provider
@@ -614,11 +621,38 @@ def _test_connection(env_vars: dict) -> bool:
 
 
 def _write_env_file(env_vars: dict):
-    """Optionally write a .env file."""
-    if Confirm.ask("\n   Save config to .env file?", default=False):
+    """Write config to ~/.ogham/config.env (global) or .env (project)."""
+    choices = {
+        "global": "~/.ogham/config.env (works from any project)",
+        "project": ".env in current directory",
+        "skip": "Don't save",
+    }
+    console.print("\n   Where to save config?")
+    for key, desc in choices.items():
+        console.print(f"     [bold]{key}[/bold]: {desc}")
+
+    choice = Prompt.ask("   Choice", choices=list(choices.keys()), default="global")
+
+    if choice == "skip":
+        return
+
+    lines = [f"{k}={v}" for k, v in env_vars.items()]
+    content = "\n".join(lines) + "\n"
+
+    if choice == "global":
+        ogham_dir = Path.home() / ".ogham"
+        ogham_dir.mkdir(parents=True, exist_ok=True)
+        env_path = ogham_dir / "config.env"
+        env_path.write_text(content)
+        # Restrict permissions -- contains API keys
+        env_path.chmod(0o600)
+        console.print(f"   [green]Saved to {env_path}[/green]")
+        console.print(
+            "   [dim]Hooks and CLI will find this automatically from any directory.[/dim]"
+        )
+    else:
         env_path = Path.cwd() / ".env"
-        lines = [f"{k}={v}" for k, v in env_vars.items()]
-        env_path.write_text("\n".join(lines) + "\n")
+        env_path.write_text(content)
         console.print(f"   [green]Saved to {env_path}[/green]")
         console.print("   [yellow]Add .env to your .gitignore -- it contains API keys.[/yellow]")
 
@@ -650,7 +684,8 @@ def run_init(
             "and MCP client connections.\n\n"
             "You only need to run this once. Run it again if you want to\n"
             "switch database or embedding provider.\n\n"
-            "[cyan]Detected platform: " + platform.system() + "[/cyan]",
+            "[cyan]Detected platform: " + platform.system() + "[/cyan]\n"
+            "[cyan]Version: " + _get_version() + "[/cyan]",
             border_style="yellow",
         )
     )

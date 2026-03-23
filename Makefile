@@ -56,6 +56,7 @@ SYNC_SOURCES := \
 	src/ogham/embeddings.py \
 	src/ogham/server.py \
 	src/ogham/cli.py \
+	src/ogham/init_wizard.py \
 	src/ogham/backends/protocol.py \
 	src/ogham/backends/postgres.py \
 	src/ogham/backends/supabase.py \
