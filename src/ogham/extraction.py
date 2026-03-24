@@ -441,7 +441,9 @@ _MULTI_HOP_PATTERNS = re.compile(
     r"|what (?:is|was) the order"
     r"|how long (?:between|since|before|after|had passed|did it take)"
     r"|which .{0,30} (?:earlier|later|before|after)"
-    r"|how (?:old|long) was I when",
+    r"|how (?:old|long) was I when"
+    r"|how many .{0,40}across (?:my |our )?(?:sessions?|requests?|conversations?)"
+    r"|across (?:all |my |our )?(?:sessions?|conversations?|requests?)",
     re.IGNORECASE,
 )
 
@@ -474,7 +476,11 @@ _ORDERING_PATTERNS = re.compile(
     r"what is the order of"
     r"|from earliest to latest"
     r"|from latest to earliest"
-    r"|in (?:chronological|reverse) order",
+    r"|in (?:chronological|reverse) order"
+    r"|list the order"
+    r"|walk me through the order"
+    r"|in (?:what|which) order"
+    r"|the sequence (?:of|in which)",
     re.IGNORECASE,
 )
 
@@ -487,6 +493,24 @@ def is_ordering_query(query: str) -> bool:
 def is_multi_hop_temporal(query: str) -> bool:
     """Detect if a query requires multi-hop temporal reasoning (comparing two events)."""
     return bool(_MULTI_HOP_PATTERNS.search(query))
+
+
+_SUMMARY_PATTERNS = re.compile(
+    r"comprehensive summary"
+    r"|summarize (?:all|everything|my)"
+    r"|summary of (?:all|everything|how|my)"
+    r"|overview of (?:all|everything|how|my)"
+    r"|how .{0,30} has progressed"
+    r"|give me a (?:full|complete|comprehensive)"
+    r"|progress.{0,20}including"
+    r"|across (?:all|my) (?:sessions?|conversations?)",
+    re.IGNORECASE,
+)
+
+
+def is_broad_summary_query(query: str) -> bool:
+    """Detect queries needing broad timeline coverage (summarization)."""
+    return bool(_SUMMARY_PATTERNS.search(query))
 
 
 def extract_query_anchors(query: str) -> list[str]:

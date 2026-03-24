@@ -23,6 +23,7 @@ from ogham.extraction import (
     extract_query_anchors,
     extract_recurrence,
     has_temporal_intent,
+    is_broad_summary_query,
     is_multi_hop_temporal,
     is_ordering_query,
     resolve_temporal_query,
@@ -150,42 +151,86 @@ def search_memories_enriched(
 
     If the query has temporal intent, resolves date references and boosts
     results whose dates fall within the resolved range.
+
+    Elastic K: ordering, summary, and multi-session queries automatically
+    expand the result limit to 2x for broader coverage of scattered facts.
+    Point queries (extraction, preference) keep the original limit.
     """
     if embedding is None:
         embedding = generate_embedding(query)
 
-    # Ordering queries: broad search, chronological sort by content date
+    # Elastic K: set-queries (ordering, summary, multi-session) get 2x limit
+    # for broader coverage of scattered facts across the timeline.
+    elastic_limit = limit * 2
+
+    # Ordering queries: strided retrieval + entity threading + chronological sort
     if is_ordering_query(query):
         results = hybrid_search_memories(
             query_text=query,
             query_embedding=embedding,
             profile=profile,
-            limit=limit * 5,
+            limit=elastic_limit * 5,
             tags=tags,
             source=source,
         )
         if results:
+            # Strided retrieval first: ensure broad timeline coverage
+            strided = _strided_retrieval(results, elastic_limit * 2)
+            # Entity threading on strided results for full entity history
+            threaded = _entity_thread(
+                strided, query, embedding, profile, elastic_limit * 2, tags, source
+            )
             # Sort by date extracted from content, then trim
-            for r in results:
+            for r in threaded:
                 r["_sort_date"] = _extract_memory_date(r) or "9999"
-            results.sort(key=lambda r: r["_sort_date"])
-            results = results[:limit]
+            threaded.sort(key=lambda r: r["_sort_date"])
+            results = threaded[:elastic_limit]
             record_access([r["id"] for r in results])
         return results
 
-    # Multi-hop temporal: entity-centric bridge retrieval
+    # Multi-hop temporal: entity-centric bridge retrieval + threading
     if is_multi_hop_temporal(query):
-        bridge_results = _bridge_retrieval(query, profile, limit, tags, source)
+        bridge_results = _bridge_retrieval(query, profile, elastic_limit, tags, source)
         if bridge_results:
             # Merge bridge results with standard search
             results = _merge_bridge_results(
-                bridge_results, query, embedding, profile, limit, tags, source
+                bridge_results,
+                query,
+                embedding,
+                profile,
+                elastic_limit,
+                tags,
+                source,
             )
-            # No temporal re-ranking on bridge results -- tested in runs 10-11,
-            # added noise without improving scores. Bridge path stays clean.
+            # Entity threading on merged results for full entity history
             if results:
+                results = _entity_thread(
+                    results,
+                    query,
+                    embedding,
+                    profile,
+                    elastic_limit,
+                    tags,
+                    source,
+                )
                 record_access([r["id"] for r in results])
             return results
+
+    # Broad summary queries: strided retrieval for timeline coverage
+    if is_broad_summary_query(query):
+        results = hybrid_search_memories(
+            query_text=query,
+            query_embedding=embedding,
+            profile=profile,
+            limit=elastic_limit * 5,
+            tags=tags,
+            source=source,
+        )
+        if results:
+            results = _strided_retrieval(results, elastic_limit)
+            results = _mmr_rerank(results, embedding, elastic_limit, lambda_param=0.5)
+            record_access([r["id"] for r in results])
+        return results
 
     # Standard search path
     fetch_limit = limit * 3 if has_temporal_intent(query) else limit
@@ -505,3 +550,332 @@ def _temporal_rerank(
 
     results.sort(key=lambda r: r.get("relevance", 0), reverse=True)
     return results
+
+
+def _entity_thread(
+    pass1_results: list[dict],
+    query: str,
+    embedding: list[float],
+    profile: str,
+    limit: int,
+    tags: list[str] | None = None,
+    source: str | None = None,
+) -> list[dict]:
+    """Entity-anchored threading: two-pass retrieval.
+
+    Pass 1: Use the top semantic results to identify core entities (nouns).
+    Pass 2: Search for ALL occurrences of those entities across the index.
+    Interleave Pass 1 (answer) with Pass 2 (history) for full coverage.
+    """
+    import re
+
+    if not pass1_results:
+        return pass1_results
+
+    # Extract key nouns from top-3 results + query
+    # Look for capitalised phrases, quoted terms, technical nouns
+    entity_sources = [query]
+    for r in pass1_results[:3]:
+        content = r.get("content", "")[:500]
+        entity_sources.append(content)
+
+    combined = " ".join(entity_sources)
+
+    # Extract candidate entities: multi-word capitalised phrases, technical terms
+    # Skip common words that appear in every conversation
+    _STOP = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "i",
+            "my",
+            "me",
+            "you",
+            "your",
+            "we",
+            "our",
+            "this",
+            "that",
+            "it",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "can",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "not",
+            "no",
+            "and",
+            "or",
+            "but",
+            "if",
+            "then",
+            "so",
+            "for",
+            "with",
+            "from",
+            "to",
+            "of",
+            "in",
+            "on",
+            "at",
+            "by",
+            "as",
+            "how",
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "why",
+            "all",
+            "each",
+            "every",
+            "some",
+            "any",
+            "many",
+            "much",
+            "more",
+            "most",
+            "other",
+            "new",
+            "old",
+            "first",
+            "last",
+            "next",
+            "different",
+            "same",
+            "user",
+            "assistant",
+            "date",
+            "time",
+            "project",
+            "app",
+            "code",
+            "feature",
+            "system",
+        }
+    )
+
+    # Find 2-3 word capitalised phrases (e.g. "Flask Login", "Transactions Table")
+    cap_phrases = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", combined)
+    # Find technical terms (hyphenated, camelCase, or ALL_CAPS)
+    tech_terms = re.findall(
+        r"\b([A-Z][a-zA-Z]+(?:-[a-zA-Z]+)+|[a-z]+[A-Z]\w+|[A-Z]{2,}[a-z]\w*)\b", combined
+    )
+    # Find quoted terms
+    quoted = re.findall(r'"([^"]+)"', combined)
+
+    # Also extract significant single words (appear in query, not stopwords)
+    query_words = [w for w in re.findall(r"\b\w{4,}\b", query.lower()) if w not in _STOP]
+
+    # Build entity query string (top 5 most specific terms)
+    entities = []
+    for phrase in cap_phrases[:3]:
+        if phrase.lower() not in _STOP:
+            entities.append(phrase)
+    for term in tech_terms[:2]:
+        entities.append(term)
+    for term in quoted[:2]:
+        entities.append(term)
+    # Add top query words as fallback
+    for w in query_words[:3]:
+        if w not in [e.lower() for e in entities]:
+            entities.append(w)
+
+    if not entities:
+        return pass1_results[:limit]
+
+    # Pass 2: search for entity occurrences
+    entity_query = " ".join(entities[:5])
+    pass2_results = hybrid_search_memories(
+        query_text=entity_query,
+        query_embedding=embedding,
+        profile=profile,
+        limit=limit * 2,
+        tags=tags,
+        source=source,
+    )
+
+    # Interleave: alternate Pass 1 (answer) and Pass 2 (history), deduped
+    merged: list[dict] = []
+    seen: set[str] = set()
+
+    p1_iter = iter(pass1_results)
+    p2_iter = iter(pass2_results)
+    p1_done = False
+    p2_done = False
+
+    while len(merged) < limit:
+        # Take from Pass 1
+        if not p1_done:
+            try:
+                r = next(p1_iter)
+                rid = r.get("id", "")
+                if rid not in seen:
+                    seen.add(rid)
+                    merged.append(r)
+            except StopIteration:
+                p1_done = True
+
+        if len(merged) >= limit:
+            break
+
+        # Take from Pass 2
+        if not p2_done:
+            try:
+                r = next(p2_iter)
+                rid = r.get("id", "")
+                if rid not in seen:
+                    seen.add(rid)
+                    merged.append(r)
+            except StopIteration:
+                p2_done = True
+
+        if p1_done and p2_done:
+            break
+
+    return merged[:limit]
+
+
+def _strided_retrieval(results: list[dict], limit: int) -> list[dict]:
+    """Diversify results across temporal buckets to prevent clumping.
+
+    Divides the timeline into N equal buckets (N = limit) and takes
+    the top-1 result from each bucket by relevance, round-robin.
+    """
+    if len(results) <= limit:
+        return results
+
+    dated = []
+    undated = []
+    for r in results:
+        d = _extract_memory_date(r)
+        if d:
+            dated.append((d, r))
+        else:
+            undated.append(r)
+
+    if not dated:
+        return results[:limit]
+
+    # Sort chronologically
+    dated.sort(key=lambda x: x[0])
+
+    # Split into N equal temporal buckets
+    n_buckets = min(limit, len(dated))
+    bucket_size = max(1, len(dated) // n_buckets)
+    buckets = []
+    for i in range(0, len(dated), bucket_size):
+        # Sort each bucket by relevance (highest first)
+        bucket = sorted(
+            [r for _, r in dated[i : i + bucket_size]],
+            key=lambda r: r.get("relevance", 0),
+            reverse=True,
+        )
+        buckets.append(bucket)
+
+    # Round-robin: take best from each bucket
+    diversified: list[dict] = []
+    seen: set[str] = set()
+    max_rounds = max(len(b) for b in buckets) if buckets else 0
+    for round_num in range(max_rounds):
+        for bucket in buckets:
+            if round_num < len(bucket):
+                r = bucket[round_num]
+                rid = r.get("id", "")
+                if rid not in seen:
+                    seen.add(rid)
+                    diversified.append(r)
+                    if len(diversified) >= limit:
+                        return diversified
+
+    # Fill from undated if needed
+    for r in undated:
+        if len(diversified) >= limit:
+            break
+        rid = r.get("id", "")
+        if rid not in seen:
+            seen.add(rid)
+            diversified.append(r)
+
+    return diversified[:limit]
+
+
+def _mmr_rerank(
+    candidates: list[dict],
+    query_embedding: list[float],
+    limit: int,
+    lambda_param: float = 0.5,
+) -> list[dict]:
+    """Maximal Marginal Relevance re-ranking for diversity.
+
+    Iteratively selects documents balancing relevance to query
+    with diversity from already-selected documents.
+
+    lambda_param: 0.5 = balanced, 0.3 = high diversity (contradiction queries),
+                  0.7 = high relevance (standard queries)
+    """
+    if len(candidates) <= limit:
+        return candidates
+
+    # Use relevance scores as Sim1 (normalized)
+    scores = [c.get("relevance", c.get("similarity", 0.0)) or 0.0 for c in candidates]
+    max_score = max(scores) if scores else 1.0
+    if max_score > 0:
+        sim1 = [s / max_score for s in scores]
+    else:
+        sim1 = [0.0] * len(candidates)
+
+    # For Sim2 (inter-document similarity), use content overlap as proxy
+    # since we don't have stored embeddings in results
+    contents = [c.get("content", "") for c in candidates]
+
+    def _content_overlap(a: str, b: str) -> float:
+        """Quick word-level Jaccard similarity."""
+        words_a = set(a.lower().split())
+        words_b = set(b.lower().split())
+        if not words_a or not words_b:
+            return 0.0
+        return len(words_a & words_b) / len(words_a | words_b)
+
+    # Greedy MMR selection
+    selected: list[int] = []
+    remaining = list(range(len(candidates)))
+
+    # First pick: highest relevance
+    best_idx = max(remaining, key=lambda i: sim1[i])
+    selected.append(best_idx)
+    remaining.remove(best_idx)
+
+    while len(selected) < limit and remaining:
+        best_mmr = -float("inf")
+        best_candidate = remaining[0]
+
+        for i in remaining:
+            # Max similarity to any already-selected document
+            max_sim2 = max(_content_overlap(contents[i], contents[j]) for j in selected)
+            mmr_score = lambda_param * sim1[i] - (1 - lambda_param) * max_sim2
+            if mmr_score > best_mmr:
+                best_mmr = mmr_score
+                best_candidate = i
+
+        selected.append(best_candidate)
+        remaining.remove(best_candidate)
+
+    return [candidates[i] for i in selected]
