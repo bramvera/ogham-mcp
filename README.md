@@ -19,13 +19,17 @@
 - [MCP tools](#mcp-tools) -- memory, search, graph, profiles, import/export
 - [Skills](#skills) -- ogham-research, ogham-recall, ogham-maintain
 - [Scoring and condensing](#scoring-and-condensing)
+- [Cross-encoder reranking](#cross-encoder-reranking) -- optional FlashRank for self-hosters
+- [ONNX local embeddings](#onnx-local-embeddings) -- BGE-M3 dense + sparse, no API costs
 - [Database setup](#database-setup) -- Supabase, Neon, vanilla Postgres
   - [Upgrading from v0.4.x](#upgrading-from-v04x)
 - [Architecture](#architecture)
 
 ## Retrieval quality
 
-**97.2% Recall@10** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025). No LLM in the search pipeline -- one PostgreSQL query, no neural rerankers, no knowledge graph.
+**97.2% Recall@10** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025). No LLM in the search pipeline -- one PostgreSQL query with [Reciprocal Rank Fusion](https://ogham-mcp.dev/blog/rrf-fusion/).
+
+**0.69 R@10 on [BEAM](https://arxiv.org/abs/2510.27246)** (400 questions across 10 memory abilities, ICLR 2026). With optional [FlashRank reranking](#cross-encoder-reranking): 0.70 R@10. [Full benchmark](https://ogham-mcp.dev/blog/beam-benchmarks/).
 
 **End-to-end QA accuracy** on LongMemEval (retrieval + LLM reads and answers):
 
@@ -44,7 +48,7 @@
 | **Ogham** | **97.2%** | 1 SQL query (pgvector + tsvector CCF hybrid search) |
 | [LongMemEval paper](https://arxiv.org/abs/2410.10813) baseline | 78.4% | Session decomposition + fact-augmented keys |
 
-Other retrieval systems that report similar R@10 numbers typically use cross-encoder reranking, NLI verification, knowledge graph enrichment, and LLM-as-a-judge pipelines. Ogham reaches 97.2% with one Postgres query.
+Other retrieval systems that report similar R@10 numbers typically use cross-encoder reranking, NLI verification, knowledge graph enrichment, and LLM-as-a-judge pipelines. Ogham reaches 97.2% with one Postgres query. Optional [FlashRank reranking](#cross-encoder-reranking) is available for self-hosters who want extra ranking precision.
 
 These tables measure different things. QA accuracy tests whether the full system (retrieval + LLM) produces the correct answer. R@10 tests whether retrieval alone finds the right memories. Ogham is a retrieval engine -- it finds the memories, your LLM reads them.
 
@@ -227,15 +231,19 @@ ogham openapi                   # Generate OpenAPI spec
 | `SUPABASE_URL` | If supabase | -- | Your Supabase project URL |
 | `SUPABASE_KEY` | If supabase | -- | Supabase secret key (service_role) |
 | `DATABASE_URL` | If postgres | -- | PostgreSQL connection string |
-| `EMBEDDING_PROVIDER` | No | `ollama` | `ollama`, `openai`, `mistral`, or `voyage` |
+| `EMBEDDING_PROVIDER` | No | `ollama` | `ollama`, `openai`, `mistral`, `voyage`, `gemini`, or `onnx` |
 | `EMBEDDING_DIM` | No | `512` | Vector dimensions -- must match your schema (see below) |
 | `OPENAI_API_KEY` | If openai | -- | OpenAI API key |
 | `MISTRAL_API_KEY` | If mistral | -- | Mistral API key |
 | `VOYAGE_API_KEY` | If voyage | -- | Voyage AI API key |
+| `GEMINI_API_KEY` | If gemini | -- | Google Gemini API key |
 | `OLLAMA_URL` | No | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_EMBED_MODEL` | No | `embeddinggemma` | Ollama embedding model |
 | `MISTRAL_EMBED_MODEL` | No | `mistral-embed` | Mistral embedding model |
 | `VOYAGE_EMBED_MODEL` | No | `voyage-4-lite` | Voyage embedding model |
+| `GEMINI_EMBED_MODEL` | No | `gemini-embedding-2-preview` | Gemini embedding model |
+| `RERANK_ENABLED` | No | `false` | Enable FlashRank cross-encoder reranking |
+| `RERANK_ALPHA` | No | `0.55` | Cross-encoder score weight (0-1) |
 | `DEFAULT_MATCH_THRESHOLD` | No | `0.7` | Similarity threshold (see below) |
 | `DEFAULT_MATCH_COUNT` | No | `10` | Max results per search |
 | `DEFAULT_PROFILE` | No | `default` | Memory profile name |
@@ -248,6 +256,8 @@ ogham openapi                   # Generate OpenAPI spec
 | Ollama | 512 | 0.70 | Tight clustering, scores run 0.8-0.9 |
 | Mistral | 1024 | 0.60 | Fixed 1024 dims, can't truncate. Schema must be `vector(1024)` |
 | Voyage | 512 (schema default) | 0.45 | Moderate spread |
+| Gemini | 512 | 0.35 | `gemini-embedding-2-preview`, supports MRL truncation |
+| ONNX | 1024 | 0.35 | Local BGE-M3 inference, dense + sparse vectors. See [ONNX section](#onnx-local-embeddings) |
 
 `EMBEDDING_DIM` must match the `vector(N)` column in your database schema. The default schema uses `vector(512)`. If you use Mistral, you need to alter the column to `vector(1024)` before storing anything.
 
@@ -389,6 +399,48 @@ Ogham goes beyond storing and retrieving. Three server-side features run automat
 
 **Automatic condensing.** Old memories that nobody accesses gradually shrink. Full text becomes a summary of key sentences, then a one-line description with tags. The original is always preserved and can be restored if the memory becomes relevant again. Run `compress_old_memories` manually or on a schedule. High-importance and frequently-accessed memories resist condensing.
 
+## Cross-encoder reranking
+
+Optional FlashRank cross-encoder reranking for self-hosters who want better ranking precision. Adds ~300ms per search on CPU.
+
+After Ogham's hybrid search returns candidates, FlashRank (ms-marco-MiniLM-L-12-v2, 21MB) rescores each result against the query using deeper token-level attention. The final score blends retrieval ranking with cross-encoder ranking.
+
+**BEAM benchmark impact:** R@10 0.69 → 0.70, MRR +8pp. Biggest gain: temporal reasoning 0.84 → 0.98. [Full results](https://ogham-mcp.dev/blog/flashrank-reranking/).
+
+Install and enable:
+
+```bash
+pip install ogham-mcp[rerank]
+# or: uv add ogham-mcp[rerank]
+
+export RERANK_ENABLED=true
+export RERANK_ALPHA=0.55   # 55% cross-encoder, 45% retrieval score
+```
+
+The model downloads on first use (~21MB). Self-hosters who want speed over precision leave it off (the default).
+
+## ONNX local embeddings
+
+Run BGE-M3 locally with ONNX Runtime -- dense and sparse vectors in a single model pass, no API calls, no GPU required. Contributed by [@ninthhousestudios](https://github.com/ninthhousestudios).
+
+The ONNX provider produces 1024-dim dense vectors plus neural sparse vectors. When sparse vectors are available, Ogham automatically uses three-signal Reciprocal Rank Fusion (dense + FTS + sparse) instead of the default two-signal path.
+
+Install and configure:
+
+```bash
+pip install ogham-mcp[onnx]
+
+# Download the model (~2.2GB)
+ogham download-model bge-m3
+
+export EMBEDDING_PROVIDER=onnx
+export EMBEDDING_DIM=1024
+```
+
+Your database schema must use `vector(1024)` for the embedding column. Performance on CPU: ~0.3s per short text, ~10s for long documents (5K+ chars). RSS: ~4.3GB peak.
+
+The ONNX provider is designed for self-hosters who want zero API costs. Cloud users should use Gemini or Voyage for lower latency.
+
 ## Database setup
 
 Ogham works with Supabase or vanilla PostgreSQL. Run the schema file that matches your setup:
@@ -416,9 +468,13 @@ psql $DATABASE_URL -f sql/migrations/012_temporal_columns.sql
 psql $DATABASE_URL -f sql/migrations/013_halfvec_compression.sql
 psql $DATABASE_URL -f sql/migrations/014_lz4_toast_compression.sql
 psql $DATABASE_URL -f sql/migrations/015_temporal_auto_extract.sql
+psql $DATABASE_URL -f sql/migrations/016_sparse_embedding.sql
+psql $DATABASE_URL -f sql/migrations/017_rrf_bm25.sql
 
 # Supabase: paste each migration file into the SQL Editor
 ```
+
+Migration 016 adds the `sparse_embedding` column for ONNX BGE-M3 sparse vectors. Migration 017 upgrades the search function to true Reciprocal Rank Fusion with length-normalised keyword scoring -- re-run your schema file to apply.
 
 All migrations are idempotent -- safe to re-run. The upgrade script checks your pgvector version and skips halfvec if pgvector is below 0.7.0.
 
@@ -440,7 +496,7 @@ Ogham MCP Server
 PostgreSQL + pgvector
 ```
 
-Memories are stored as rows with vector embeddings. Search combines pgvector cosine similarity with PostgreSQL full-text search using Convex Combination Fusion (CCF). The Supabase backend uses `postgrest-py` directly (not the full Supabase SDK) for a lightweight dependency footprint.
+Memories are stored as rows with vector embeddings. Search combines pgvector cosine similarity with PostgreSQL full-text search using Reciprocal Rank Fusion (RRF) -- position-based, score-agnostic fusion that handles different score scales correctly. Optional FlashRank cross-encoder reranking adds a second pass for self-hosters. The Supabase backend uses `postgrest-py` directly (not the full Supabase SDK) for a lightweight dependency footprint.
 
 The knowledge graph uses a `memory_relationships` table with recursive CTEs for traversal -- no separate graph database.
 
