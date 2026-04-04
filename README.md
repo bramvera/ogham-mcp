@@ -27,7 +27,7 @@
 
 ## Retrieval quality
 
-**97.2% Recall@10** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025). No LLM in the search pipeline -- one PostgreSQL query with [Reciprocal Rank Fusion](https://ogham-mcp.dev/blog/rrf-fusion/).
+**87.4% QA accuracy** on [LongMemEval](https://arxiv.org/abs/2410.10813) (500 questions, ICLR 2025) -- 437/500 questions answered correctly by gpt-5.4-nano reading from Ogham's retrieved memories. Retrieval R@10: 97% (Voyage) / 93% (Gemini). No LLM in the search or enrichment pipeline -- one PostgreSQL query with [Reciprocal Rank Fusion](https://ogham-mcp.dev/blog/rrf-fusion/) plus pure-regex entity extraction at ingest.
 
 **0.69 R@10 on [BEAM](https://arxiv.org/abs/2510.27246)** (400 questions across 10 memory abilities, ICLR 2026). With optional [FlashRank reranking](#cross-encoder-reranking): 0.70 R@10. [Full benchmark](https://ogham-mcp.dev/blog/beam-benchmarks/).
 
@@ -424,6 +424,18 @@ Ogham goes beyond storing and retrieving. Three server-side features run automat
 **Content signal scoring.** Memories that mention decisions, errors, architecture, or contain code blocks get a higher signal score. A debug session where you fixed a real bug ranks above a casual note about a meeting. The scoring is pure regex, no LLM involved.
 
 **Automatic condensing.** Old memories that nobody accesses gradually shrink. Full text becomes a summary of key sentences, then a one-line description with tags. The original is always preserved and can be restored if the memory becomes relevant again. Run `compress_old_memories` manually or on a schedule. High-importance and frequently-accessed memories resist condensing.
+
+## Entity enrichment
+
+Every memory is automatically enriched at ingest with structured entity tags -- no LLM calls, pure regex and dictionary matching across 18 languages.
+
+**Six entity categories.** Events (wedding, concert, meeting), activities (hiking, coding, cooking), emotions (frustrated, happy, relieved), relationships (sister, boss, colleague), quantities (3 books, 5 miles), and locations (Berlin, Tokyo -- via GeoNames database).
+
+**18 languages.** English, German, French, Spanish, Italian, Portuguese, Brazilian Portuguese, Dutch, Polish, Russian, Ukrainian, Turkish, Arabic, Hindi, Japanese, Korean, Chinese, and Irish. Each language includes common inflected forms (case endings, verb tenses, lenition) so "svadʹbu" matches "svadʹba" in Russian and "bhainis" matches "bainis" in Irish.
+
+**Timeline table.** Search results include a chronological timeline with pre-computed "days ago" and memory ID cross-references. Helps LLM readers answer temporal questions without doing date arithmetic.
+
+**Lost in the Middle reordering.** Search results are reordered so the highest-relevance memories appear at the start and end of the context, where LLMs pay the most attention (Liu et al., 2023).
 
 ## Cross-encoder reranking
 
