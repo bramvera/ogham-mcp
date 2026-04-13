@@ -378,6 +378,13 @@ begin
             ))
         * m.confidence
         * (1.0 + g.graph_boost * 0.2)
+        * (1.0 + case
+            when query_entity_tags is null or cardinality(query_entity_tags) = 0 then 0.0
+            else (select count(*)::float from unnest(query_entity_tags) qt
+                  where qt = any(m.tags))
+                 / cardinality(query_entity_tags) * 0.4
+          end)
+        * exp(-recency_decay * extract(epoch from (now() - m.created_at)) / 86400.0)
         )::float as relevance,
         m.access_count,
         m.last_accessed_at,
@@ -412,7 +419,9 @@ CREATE OR REPLACE FUNCTION hybrid_search_memories(
     full_text_weight float DEFAULT 0.3,
     semantic_weight float DEFAULT 0.7,
     rrf_k integer DEFAULT 10,
-    filter_profiles text[] DEFAULT NULL
+    filter_profiles text[] DEFAULT NULL,
+    query_entity_tags text[] DEFAULT NULL,
+    recency_decay float DEFAULT 0.0
 )
 RETURNS TABLE(
     id uuid, content text, metadata jsonb, source text, profile text, tags text[],
@@ -473,6 +482,13 @@ select
         * (1.0 + ln(m.access_count + 1.0) * 0.1)
         * m.confidence
         * (1.0 + g.graph_boost * 0.2)
+        * (1.0 + case
+            when query_entity_tags is null or cardinality(query_entity_tags) = 0 then 0.0
+            else (select count(*)::float from unnest(query_entity_tags) qt
+                  where qt = any(m.tags))
+                 / cardinality(query_entity_tags) * 0.4
+          end)
+        * exp(-recency_decay * extract(epoch from (now() - m.created_at)) / 86400.0)
     )::float as relevance,
     m.access_count, m.last_accessed_at, m.confidence, m.created_at, m.updated_at
 from fused f
